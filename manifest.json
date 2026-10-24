@@ -1,0 +1,12 @@
+{
+  "name": "System Settings",
+  "version": "1.0.0",
+  "identifier": "com.freebsdx.settings",
+  "executable": "bin/settings",
+  "icon": "Resources/icon.svg",
+  "permissions": [
+    "com.freebsdx.permission.UI",
+    "com.freebsdx.permission.POWER_READ"
+  ],
+  "mime_types": []
+}
