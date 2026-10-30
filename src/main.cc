@@ -847,6 +847,9 @@ int main() {
     // ── Root layout ────────────────────────────────────────────────────────
     auto title_bar = std::make_shared<TextWidget>("Settings", 28.0f);
     title_bar->setPadding(8);
+    // Sits on the window's dark background, not on a themed card: the light
+    // theme's dark text colour made it invisible.
+    title_bar->setColor({0.92f, 0.93f, 0.96f, 1.0f});
 
     auto content = std::make_shared<FlexColumn>(std::vector<std::shared_ptr<Widget>>{
         title_bar,
