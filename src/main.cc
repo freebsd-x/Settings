@@ -838,7 +838,7 @@ int main() {
                .setSubtitle(rdp_pw_row);
 
     auto rdp_status_w = std::make_shared<TextWidget>("VNC server off", 13.0f);
-    rdp_status_w->setColor(Color{0.6f, 0.6f, 0.6f, 1.0f});
+    rdp_status_w->setColor(Color{0.47f, 0.47f, 0.47f, 1.0f});   // reads on the card in both themes
     auto tile_rdp_status = std::make_shared<ListTileWidget>();
     tile_rdp_status->setSubtitle(rdp_status_w);
 
