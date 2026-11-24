@@ -699,15 +699,69 @@ int main() {
         std::make_shared<TextWidget>("1 hr", 13.0f),
     });
     lock_group->select(3); // default: 10 min
-    lock_group->subscribe([](int idx) {
+    // What the compositor has, so one choice doesn't undo another.
+    auto lock_policy = std::make_shared<ScreenLockPolicy>();
+    lock_policy->enabled_ = lock_policy->require_password_ = lock_policy->lock_on_sleep_ = 1;
+    lock_policy->timeout_seconds_ = 10 * 60;
+    auto send_lock = [lock_policy]() {
         if (!g_xbus) return;
-        LockTimeoutRequest req{};
-        req.seconds_ = kLockSeconds[idx < 6 ? idx : 3];
-        g_xbus->Call("com.freebsdx.Lock",
-            static_cast<uint32_t>(LockOpcode::SetTimeout),
-            {reinterpret_cast<const uint8_t*>(&req), sizeof(req)},
-            nullptr);
+        g_xbus->Call("com.freebsdx.ScreenLock", static_cast<uint32_t>(ScreenLockOpcode::SetPolicy),
+                     {reinterpret_cast<const uint8_t*>(lock_policy.get()), sizeof(*lock_policy)}, nullptr);
+    };
+    lock_group->subscribe([lock_policy, send_lock](int idx) {
+        const uint32_t secs = kLockSeconds[idx >= 0 && idx < 6 ? idx : 3];
+        const uint32_t on = secs ? 1u : 0u;
+        if (lock_policy->enabled_ == on && (!on || lock_policy->timeout_seconds_ == secs)) return;   // as it is
+        lock_policy->enabled_ = on;
+        if (secs) lock_policy->timeout_seconds_ = secs;
+        send_lock();
     });
+    auto lock_bg_group = RadioGroupController::create();
+    auto lock_bg_row = std::make_shared<FlexRow>(std::vector<std::shared_ptr<Widget>>{
+        std::make_shared<RadioButtonWidget>(lock_bg_group, 0),
+        std::make_shared<TextWidget>("Wallpaper  ", 13.0f),
+        std::make_shared<RadioButtonWidget>(lock_bg_group, 1),
+        std::make_shared<TextWidget>("Matrix Rain", 13.0f),
+    });
+    lock_bg_group->select(0);
+    lock_bg_group->subscribe([lock_policy, send_lock](int idx) {
+        const uint32_t bg = idx == 1 ? 2u : 1u;
+        if (lock_policy->background_ == bg || lock_policy->background_ == 0) return;   // as it is, or not known yet
+        lock_policy->background_ = bg;
+        send_lock();
+    });
+    auto tile_lock_bg = std::make_shared<ListTileWidget>();
+    tile_lock_bg
+        ->setTitle(std::make_shared<TextWidget>("Background", 15.0f))
+        .setSubtitle(lock_bg_row);
+
+    auto off_group = RadioGroupController::create();
+    static const uint32_t kOffSeconds[] = {0, 2*60, 5*60, 10*60, 30*60};
+    auto off_row = std::make_shared<FlexRow>(std::vector<std::shared_ptr<Widget>>{
+        std::make_shared<RadioButtonWidget>(off_group, 0),
+        std::make_shared<TextWidget>("Never  ", 13.0f),
+        std::make_shared<RadioButtonWidget>(off_group, 1),
+        std::make_shared<TextWidget>("2 m  ", 13.0f),
+        std::make_shared<RadioButtonWidget>(off_group, 2),
+        std::make_shared<TextWidget>("5 m  ", 13.0f),
+        std::make_shared<RadioButtonWidget>(off_group, 3),
+        std::make_shared<TextWidget>("10 m  ", 13.0f),
+        std::make_shared<RadioButtonWidget>(off_group, 4),
+        std::make_shared<TextWidget>("30 m", 13.0f),
+    });
+    off_group->select(3);
+    off_group->subscribe([](int idx) {
+        if (!g_xbus) return;
+        ScreenTimeoutRequest req{};
+        req.timeout_secs_ = kOffSeconds[idx >= 0 && idx < 5 ? idx : 3];
+        g_xbus->Call("com.freebsdx.ScreenTimeout", static_cast<uint32_t>(ScreenTimeoutOpcode::SetTimeout),
+                     {reinterpret_cast<const uint8_t*>(&req), sizeof(req)}, nullptr);
+    });
+    auto tile_screen_off = std::make_shared<ListTileWidget>();
+    tile_screen_off
+        ->setTitle(std::make_shared<TextWidget>("Turn Screen Off After", 15.0f))
+        .setSubtitle(off_row);
+
     auto tile_lock_timeout = std::make_shared<ListTileWidget>();
     tile_lock_timeout
         ->setTitle(std::make_shared<TextWidget>("Lock Screen After", 15.0f))
@@ -723,82 +777,7 @@ int main() {
     auto tile_lock_now = std::make_shared<ListTileWidget>();
     tile_lock_now->setSubtitle(btn_lock_now);
 
-    auto s_lock = section("LOCK SCREEN", {tile_lock_timeout, tile_lock_now});
-
-    // ── Screen Saver ───────────────────────────────────────────────────────────
-    // Shared config struct lets the timeout and mode radio groups stay in sync
-    // without requiring read-modify-write round-trips via XBus.
-    auto ss_config = std::make_shared<ScreenSaverConfig>();
-    ss_config->timeout_secs_ = 5 * 60; // mirrors ScreenSaverService default
-    ss_config->mode_ = 0;
-
-    auto ss_sw = std::make_shared<SwitchWidget>(true); // enabled by default
-    ss_sw->setOnChanged([ss_config](bool on) {
-        if (!g_xbus) return;
-        ss_config->timeout_secs_ = on ? (5 * 60) : 0;
-        g_xbus->Call("com.freebsdx.ScreenSaver",
-            static_cast<uint32_t>(ScreenSaverOpcode::SetConfig),
-            {reinterpret_cast<const uint8_t*>(ss_config.get()), sizeof(*ss_config)},
-            nullptr);
-    });
-    auto tile_ss_enabled = std::make_shared<ListTileWidget>();
-    tile_ss_enabled
-        ->setTitle(std::make_shared<TextWidget>("Enable Screen Saver", 15.0f))
-        .setTrailing(ss_sw);
-
-    auto ss_timeout_group = RadioGroupController::create();
-    static const uint32_t kSaverSeconds[] = {60, 2*60, 5*60, 10*60, 30*60};
-    auto ss_timeout_row = std::make_shared<FlexRow>(std::vector<std::shared_ptr<Widget>>{
-        std::make_shared<RadioButtonWidget>(ss_timeout_group, 0),
-        std::make_shared<TextWidget>("1 m  ", 13.0f),
-        std::make_shared<RadioButtonWidget>(ss_timeout_group, 1),
-        std::make_shared<TextWidget>("2 m  ", 13.0f),
-        std::make_shared<RadioButtonWidget>(ss_timeout_group, 2),
-        std::make_shared<TextWidget>("5 m  ", 13.0f),
-        std::make_shared<RadioButtonWidget>(ss_timeout_group, 3),
-        std::make_shared<TextWidget>("10 m  ", 13.0f),
-        std::make_shared<RadioButtonWidget>(ss_timeout_group, 4),
-        std::make_shared<TextWidget>("30 m", 13.0f),
-    });
-    ss_timeout_group->select(2); // default: 5 min
-    ss_timeout_group->subscribe([ss_config](int idx) {
-        if (!g_xbus) return;
-        ss_config->timeout_secs_ = kSaverSeconds[idx < 5 ? idx : 2];
-        g_xbus->Call("com.freebsdx.ScreenSaver",
-            static_cast<uint32_t>(ScreenSaverOpcode::SetConfig),
-            {reinterpret_cast<const uint8_t*>(ss_config.get()), sizeof(*ss_config)},
-            nullptr);
-    });
-    auto tile_ss_timeout = std::make_shared<ListTileWidget>();
-    tile_ss_timeout
-        ->setTitle(std::make_shared<TextWidget>("Start After", 15.0f))
-        .setSubtitle(ss_timeout_row);
-
-    auto ss_mode_group = RadioGroupController::create();
-    auto ss_mode_row = std::make_shared<FlexRow>(std::vector<std::shared_ptr<Widget>>{
-        std::make_shared<RadioButtonWidget>(ss_mode_group, 0),
-        std::make_shared<TextWidget>("Blank  ", 13.0f),
-        std::make_shared<RadioButtonWidget>(ss_mode_group, 1),
-        std::make_shared<TextWidget>("Clock  ", 13.0f),
-        std::make_shared<RadioButtonWidget>(ss_mode_group, 2),
-        std::make_shared<TextWidget>("Matrix Rain", 13.0f),
-    });
-    ss_mode_group->select(0); // default: blank
-    ss_mode_group->subscribe([ss_config](int idx) {
-        if (!g_xbus) return;
-        ss_config->mode_ = static_cast<uint32_t>(idx < 3 ? idx : 0);
-        g_xbus->Call("com.freebsdx.ScreenSaver",
-            static_cast<uint32_t>(ScreenSaverOpcode::SetConfig),
-            {reinterpret_cast<const uint8_t*>(ss_config.get()), sizeof(*ss_config)},
-            nullptr);
-    });
-    auto tile_ss_mode = std::make_shared<ListTileWidget>();
-    tile_ss_mode
-        ->setTitle(std::make_shared<TextWidget>("Style", 15.0f))
-        .setSubtitle(ss_mode_row);
-
-    auto s_screensaver = section("SCREEN SAVER",
-                                 {tile_ss_enabled, tile_ss_timeout, tile_ss_mode});
+    auto s_lock = section("LOCK SCREEN", {tile_lock_timeout, tile_screen_off, tile_lock_bg, tile_lock_now});
 
     // ── Remote Desktop ─────────────────────────────────────────────────────
     auto rdp_sw = std::make_shared<SwitchWidget>(false);
@@ -875,7 +854,6 @@ int main() {
         std::make_shared<Spacer>(1, 8),
         s_lock,
         std::make_shared<Spacer>(1, 8),
-        s_screensaver,
         std::make_shared<Spacer>(1, 8),
         s_rdp,
         std::make_shared<Spacer>(1, 8),
@@ -892,8 +870,7 @@ int main() {
          wifi_status_label, wifi_sw, rebuild_network_list,
          vpn_status_label, vpn_sw, vpn_import_input,
          volume_slider, mute_sw, sink_col, sink_label, stream_col,
-         lock_group, rdp_sw, rdp_status_w,
-         ss_config, ss_sw, ss_timeout_group, ss_mode_group,
+         lock_group, lock_policy, lock_bg_group, off_group, rdp_sw, rdp_status_w,
          profile_group, cpu_freq_label, seats_label,
          wallpaper_path_input, wallpaper_fit, wp_chooser_req](XBusClient& xbus) {
             g_xbus = &xbus;
@@ -1300,19 +1277,27 @@ int main() {
                     }
                 });
 
-            // Fetch initial Screen Saver config and sync controls.
-            g_xbus->Call("com.freebsdx.ScreenSaver",
-                static_cast<uint32_t>(ScreenSaverOpcode::GetConfig),
-                {},
-                [ss_config, ss_sw, ss_timeout_group, ss_mode_group](const XBusMessage& resp) {
-                    ScreenSaverConfig cfg{};
-                    std::memcpy(&cfg, resp.payload_, sizeof(cfg));
-                    *ss_config = cfg;
-                    ss_sw->setValue(cfg.timeout_secs_ > 0);
-                    static const uint32_t kSecs[] = {60, 2*60, 5*60, 10*60, 30*60};
+            // The lock screen's and the screen's delays, as they are now.
+            g_xbus->Call("com.freebsdx.ScreenLock",
+                static_cast<uint32_t>(ScreenLockOpcode::GetPolicy), {},
+                [lock_group, lock_policy, lock_bg_group](const XBusMessage& resp) {
+                    ScreenLockPolicy p{};
+                    std::memcpy(&p, resp.payload_, sizeof(p));
+                    *lock_policy = p;
+                    const uint32_t secs = p.enabled_ ? p.timeout_seconds_ : 0;
+                    static const uint32_t kSecs[] = {0, 60, 5*60, 10*60, 30*60, 60*60};
+                    for (int i = 0; i < 6; ++i)
+                        if (secs == kSecs[i]) lock_group->select(i);
+                    lock_bg_group->select(p.background_ == 2 ? 1 : 0);
+                });
+            g_xbus->Call("com.freebsdx.ScreenTimeout",
+                static_cast<uint32_t>(ScreenTimeoutOpcode::GetTimeout), {},
+                [off_group](const XBusMessage& resp) {
+                    ScreenTimeoutState st{};
+                    std::memcpy(&st, resp.payload_, sizeof(st));
+                    static const uint32_t kSecs[] = {0, 2*60, 5*60, 10*60, 30*60};
                     for (int i = 0; i < 5; ++i)
-                        if (cfg.timeout_secs_ == kSecs[i]) { ss_timeout_group->select(i); break; }
-                    if (cfg.mode_ < 3) ss_mode_group->select(cfg.mode_);
+                        if (st.timeout_secs_ == kSecs[i]) off_group->select(i);
                 });
 
             // Fetch initial Remote Desktop status
